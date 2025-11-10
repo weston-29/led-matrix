@@ -1,2 +1,2 @@
 # led-matrix
-Various experiments with ENGR40M LED Matrix
+Lab 3a LED Matrix Verification Demo: https://youtu.be/hHfUoH2lveU?si=t6DIYIu9umvpg3ea
