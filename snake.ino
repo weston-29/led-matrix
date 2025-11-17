@@ -19,9 +19,11 @@ const int JOY_THRESHOLD = 300; // Threshold for detecting joystick movement from
 
 // Game timing
 const unsigned long MOVE_INTERVAL = 500; // 500ms = 2 moves per second
-const unsigned long APPLE_BLINK_INTERVAL = 250; // 500ms blink on/off
+const unsigned long APPLE_BLINK_INTERVAL = 250; // 250ms blink on/off
+const unsigned long EXPLOSION_FRAME_INTERVAL = 250; // 250ms per explosion frame
 unsigned long lastMoveTime = 0;
 unsigned long lastAppleBlinkTime = 0;
+unsigned long explosionStartTime = 0;
 
 // Snake state
 struct Point {
@@ -42,7 +44,8 @@ byte appleY = 0;
 bool appleVisible = true; // For blinking
 
 // Game state
-bool gameActive = false;
+enum GameState { WAITING, PLAYING, EXPLODING };
+GameState gameState = WAITING;
 
 void setup() {
   Serial.begin(9600);
@@ -111,9 +114,84 @@ void resetGame() {
   snakeLength = 1;
   direction = 0;
   lastDirection = 0;
-  gameActive = false;
+  gameState = WAITING;
   generateApple(); // Generate first apple
   Serial.println("Game reset! Move joystick to start.");
+}
+
+void startExplosion() {
+  gameState = EXPLODING;
+  explosionStartTime = millis();
+  Serial.println("BOOM!");
+}
+
+// Explosion animation frames - manually defined LED coordinates
+// Frame 0: Center 2x2 square
+const Point explosionFrame0[] = {{3,3}, {3,4}, {4,3}, {4,4}};
+const int explosionFrame0Size = 4;
+
+// Frame 1: Next ring out
+const Point explosionFrame1[] = {
+  {2,2}, {2,3}, {2,4}, {2,5},
+  {3,2}, {3,5},
+  {4,2}, {4,5},
+  {5,2}, {5,3}, {5,4}, {5,5}
+};
+const int explosionFrame1Size = 12;
+
+// Frame 2: Next ring out
+const Point explosionFrame2[] = {
+  {1,1}, {1,2}, {1,3}, {1,4}, {1,5}, {1,6},
+  {2,1}, {2,6},
+  {3,1}, {3,6},
+  {4,1}, {4,6},
+  {5,1}, {5,6},
+  {6,1}, {6,2}, {6,3}, {6,4}, {6,5}, {6,6}
+};
+const int explosionFrame2Size = 20;
+
+// Frame 3: Outer border
+const Point explosionFrame3[] = {
+  {0,0}, {0,1}, {0,2}, {0,3}, {0,4}, {0,5}, {0,6}, {0,7},
+  {1,0}, {1,7},
+  {2,0}, {2,7},
+  {3,0}, {3,7},
+  {4,0}, {4,7},
+  {5,0}, {5,7},
+  {6,0}, {6,7},
+  {7,0}, {7,1}, {7,2}, {7,3}, {7,4}, {7,5}, {7,6}, {7,7}
+};
+const int explosionFrame3Size = 28;
+
+void drawExplosionFrame(byte ledOn[8][8], int frameNum) {
+  const Point* frameData;
+  int frameSize;
+  
+  switch(frameNum) {
+    case 0:
+      frameData = explosionFrame0;
+      frameSize = explosionFrame0Size;
+      break;
+    case 1:
+      frameData = explosionFrame1;
+      frameSize = explosionFrame1Size;
+      break;
+    case 2:
+      frameData = explosionFrame2;
+      frameSize = explosionFrame2Size;
+      break;
+    case 3:
+      frameData = explosionFrame3;
+      frameSize = explosionFrame3Size;
+      break;
+    default:
+      return; // No LEDs for frame 4+ (blank)
+  }
+  
+  // Light up all LEDs in this frame
+  for (int i = 0; i < frameSize; i++) {
+    ledOn[frameData[i].x][frameData[i].y] = 1;
+  }
 }
 
 void generateApple() {
@@ -144,12 +222,38 @@ void generateApple() {
 void loop() {
   static byte ledOn[8][8] = {0};
   
+  // Handle explosion animation
+  if (gameState == EXPLODING) {
+    unsigned long elapsedTime = millis() - explosionStartTime;
+    int frame = elapsedTime / EXPLOSION_FRAME_INTERVAL;
+    
+    // Clear display
+    for (int i = 0; i < 8; i++) {
+      for (int j = 0; j < 8; j++) {
+        ledOn[i][j] = 0;
+      }
+    }
+    
+    if (frame < 4) {
+      // Draw explosion frame for frames 0-3
+      drawExplosionFrame(ledOn, frame);
+    } else if (frame == 4) {
+      // Frame 4: all LEDs off (already cleared)
+    } else {
+      // Animation complete, reset game
+      resetGame();
+    }
+    
+    display(ledOn);
+    return; // Skip normal game logic during explosion
+  }
+  
   // Read joystick input
   byte newDirection = readDirection();
   
   // Start game if not active and joystick moved
-  if (!gameActive && newDirection != 0) {
-    gameActive = true;
+  if (gameState == WAITING && newDirection != 0) {
+    gameState = PLAYING;
     direction = newDirection;
     lastDirection = newDirection;
     lastMoveTime = millis();
@@ -157,15 +261,15 @@ void loop() {
     Serial.println("Game started!");
   }
   
-  // Handle apple blinking (only when game is active)
-  if (gameActive && (millis() - lastAppleBlinkTime >= APPLE_BLINK_INTERVAL)) {
+  // Handle apple blinking (only when game is playing)
+  if (gameState == PLAYING && (millis() - lastAppleBlinkTime >= APPLE_BLINK_INTERVAL)) {
     lastAppleBlinkTime = millis();
     appleVisible = !appleVisible; // Toggle visibility
   }
   
   // Update direction if game is active and direction changed
   // Prevent opposite direction (can't go back on yourself)
-  if (gameActive && newDirection != 0 && newDirection != lastDirection) {
+  if (gameState == PLAYING && newDirection != 0 && newDirection != lastDirection) {
     // Check not going opposite direction
     if (!((direction == 1 && newDirection == 2) ||  // UP and DOWN
           (direction == 2 && newDirection == 1) ||
@@ -177,7 +281,7 @@ void loop() {
   }
   
   // Move snake at fixed intervals
-  if (gameActive && (millis() - lastMoveTime >= MOVE_INTERVAL)) {
+  if (gameState == PLAYING && (millis() - lastMoveTime >= MOVE_INTERVAL)) {
     lastMoveTime = millis();
     
     // Calculate next head position based on direction
@@ -202,7 +306,7 @@ void loop() {
     // Check bounds
     if (nextX < 0 || nextX > 7 || nextY < 0 || nextY > 7) {
       Serial.println("Hit boundary!");
-      resetGame();
+      startExplosion();
     } else {
       // Check collision with self (tail)
       bool hitSelf = false;
@@ -215,7 +319,7 @@ void loop() {
       
       if (hitSelf) {
         Serial.println("Hit yourself!");
-        resetGame();
+        startExplosion();
       } else {
         // Check if snake ate the apple
         bool ateApple = (nextX == appleX && nextY == appleY);
@@ -252,8 +356,8 @@ void loop() {
     ledOn[snakeBody[i].x][snakeBody[i].y] = 1;
   }
   
-  // Draw apple (blinking if game is active, solid if waiting to start)
-  if (!gameActive || appleVisible) {
+  // Draw apple (blinking if game is playing, solid if waiting to start)
+  if (gameState == WAITING || appleVisible) {
     ledOn[appleX][appleY] = 1;
   }
   
