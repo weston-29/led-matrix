@@ -19,15 +19,27 @@ const int JOY_THRESHOLD = 300; // Threshold for detecting joystick movement from
 
 // Game timing
 const unsigned long MOVE_INTERVAL = 500; // 500ms = 2 moves per second
+const unsigned long APPLE_BLINK_INTERVAL = 250; // 500ms blink on/off
 unsigned long lastMoveTime = 0;
+unsigned long lastAppleBlinkTime = 0;
 
 // Snake state
-byte snakeX = 3;
-byte snakeY = 3;
+struct Point {
+  byte x;
+  byte y;
+};
+
+Point snakeBody[64]; // Maximum possible snake length on 8x8 grid
+byte snakeLength = 1; // Current length of snake
 
 // Direction: 0=none, 1=up, 2=down, 3=left, 4=right
 byte direction = 0;
 byte lastDirection = 0; // To prevent rapid direction changes
+
+// Apple state
+byte appleX = 0;
+byte appleY = 0;
+bool appleVisible = true; // For blinking
 
 // Game state
 bool gameActive = false;
@@ -40,6 +52,9 @@ void setup() {
   pinMode(VRy, INPUT);
   Serial.println("Joystick Initialized");
   Serial.println("Move joystick to start game!");
+  
+  randomSeed(analogRead(A6)); // Seed random number generator with unconnected pin
+  generateApple(); // Generate first apple before game starts
 
   for (byte i = 0; i < 8; i++) {
     pinMode(ANODE_PINS[i], OUTPUT);
@@ -90,12 +105,40 @@ byte readDirection() {
 }
 
 void resetGame() {
-  snakeX = 3;
-  snakeY = 3;
+  // Initialize snake at center
+  snakeBody[0].x = 3;
+  snakeBody[0].y = 3;
+  snakeLength = 1;
   direction = 0;
   lastDirection = 0;
   gameActive = false;
+  generateApple(); // Generate first apple
   Serial.println("Game reset! Move joystick to start.");
+}
+
+void generateApple() {
+  // Generate random position that's not occupied by any part of the snake
+  bool validPosition = false;
+  
+  while (!validPosition) {
+    appleX = random(0, 8);
+    appleY = random(0, 8);
+    
+    // Check if this position overlaps with any snake segment
+    validPosition = true;
+    for (int i = 0; i < snakeLength; i++) {
+      if (appleX == snakeBody[i].x && appleY == snakeBody[i].y) {
+        validPosition = false;
+        break;
+      }
+    }
+  }
+  
+  Serial.print("Apple generated at: (");
+  Serial.print(appleX);
+  Serial.print(", ");
+  Serial.print(appleY);
+  Serial.println(")");
 }
 
 void loop() {
@@ -110,7 +153,14 @@ void loop() {
     direction = newDirection;
     lastDirection = newDirection;
     lastMoveTime = millis();
+    lastAppleBlinkTime = millis(); // Start apple blinking
     Serial.println("Game started!");
+  }
+  
+  // Handle apple blinking (only when game is active)
+  if (gameActive && (millis() - lastAppleBlinkTime >= APPLE_BLINK_INTERVAL)) {
+    lastAppleBlinkTime = millis();
+    appleVisible = !appleVisible; // Toggle visibility
   }
   
   // Update direction if game is active and direction changed
@@ -130,9 +180,9 @@ void loop() {
   if (gameActive && (millis() - lastMoveTime >= MOVE_INTERVAL)) {
     lastMoveTime = millis();
     
-    // Calculate next position based on direction
-    int nextX = snakeX;
-    int nextY = snakeY;
+    // Calculate next head position based on direction
+    int nextX = snakeBody[0].x;
+    int nextY = snakeBody[0].y;
     
     switch(direction) {
       case 1: // UP
@@ -154,9 +204,39 @@ void loop() {
       Serial.println("Hit boundary!");
       resetGame();
     } else {
-      // Update position
-      snakeX = nextX;
-      snakeY = nextY;
+      // Check collision with self (tail)
+      bool hitSelf = false;
+      for (int i = 0; i < snakeLength; i++) {
+        if (nextX == snakeBody[i].x && nextY == snakeBody[i].y) {
+          hitSelf = true;
+          break;
+        }
+      }
+      
+      if (hitSelf) {
+        Serial.println("Hit yourself!");
+        resetGame();
+      } else {
+        // Check if snake ate the apple
+        bool ateApple = (nextX == appleX && nextY == appleY);
+        
+        if (ateApple) {
+          Serial.println("Apple eaten!");
+          snakeLength++; // Grow the snake
+          generateApple(); // Generate new apple
+        }
+        
+        // Move the snake body: shift all segments back
+        // Start from tail and move towards head
+        for (int i = snakeLength - 1; i > 0; i--) {
+          snakeBody[i].x = snakeBody[i - 1].x;
+          snakeBody[i].y = snakeBody[i - 1].y;
+        }
+        
+        // Update head position
+        snakeBody[0].x = nextX;
+        snakeBody[0].y = nextY;
+      }
     }
   }
   
@@ -167,7 +247,15 @@ void loop() {
     }
   }
   
-  ledOn[snakeX][snakeY] = 1;
+  // Draw entire snake body
+  for (int i = 0; i < snakeLength; i++) {
+    ledOn[snakeBody[i].x][snakeBody[i].y] = 1;
+  }
+  
+  // Draw apple (blinking if game is active, solid if waiting to start)
+  if (!gameActive || appleVisible) {
+    ledOn[appleX][appleY] = 1;
+  }
   
   // Display the LED matrix
   display(ledOn);
