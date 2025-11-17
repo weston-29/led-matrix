@@ -47,6 +47,136 @@ bool appleVisible = true; // For blinking
 enum GameState { WAITING, PLAYING, EXPLODING };
 GameState gameState = WAITING;
 
+// BITMAPS for start screen - currently says SNAKE
+
+const byte LETTER_S[5][4] = {
+  {1,1,1,1},
+  {1,0,0,0},
+  {1,1,1,1},
+  {0,0,0,1},
+  {1,1,1,1}
+};
+
+const byte LETTER_N[5][4] = {
+  {1,0,0,1},
+  {1,1,0,1},
+  {1,0,1,1},
+  {1,0,0,1},
+  {1,0,0,1}
+};
+
+const byte LETTER_A[5][4] = {
+  {0,1,1,0},
+  {1,0,0,1},
+  {1,1,1,1},
+  {1,0,0,1},
+  {1,0,0,1}
+};
+
+const byte LETTER_K[5][4] = {
+  {1,0,0,1},
+  {1,0,1,0},
+  {1,1,0,0},
+  {1,0,1,0},
+  {1,0,0,1}
+};
+
+const byte LETTER_E[5][4] = {
+  {1,1,1,1},
+  {1,0,0,0},
+  {1,1,0,0},
+  {1,0,0,0},
+  {1,1,1,1}
+};
+
+// The word is: S N A K E
+const byte *LETTERS[5] = {
+  (const byte*)LETTER_S,
+  (const byte*)LETTER_N,
+  (const byte*)LETTER_A,
+  (const byte*)LETTER_K,
+  (const byte*)LETTER_E
+};
+
+const int LETTER_COUNT = 5;
+const int LETTER_HEIGHT = 5;
+const int LETTER_WIDTH = 4;
+
+// spacing: 1 column between letters, 3 columns after full word
+const int INTER_LETTER_SPACE = 1;
+const int END_SPACE = 3;
+
+// Compute total scroll width
+int computeScrollWidth() {
+  int total = 0;
+  for (int i = 0; i < LETTER_COUNT; i++)
+    total += LETTER_WIDTH + INTER_LETTER_SPACE;
+  return total + END_SPACE;
+}
+
+const int SCROLL_WIDTH = computeScrollWidth();
+
+// Full scroll buffer: 5 rows, SCROLL_WIDTH columns
+// Holds entire pattern and spacing
+byte scrollBuffer[5][200]; // 200 > max possible width safety
+
+// Build scroll buffer once
+void buildScrollBuffer() {
+  int col = 0;
+  for (int i = 0; i < LETTER_COUNT; i++) {
+    int w = LETTER_WIDTH;
+    const byte (*letter)[4] = (const byte(*)[4])LETTERS[i];
+
+    // Copy each letter
+    for (int x = 0; x < w; x++) {
+      for (int y = 0; y < 5; y++) {
+        scrollBuffer[y][col + x] = letter[y][x];
+      }
+    }
+    col += w;
+
+    // Add inter-letter space
+    for (int s = 0; s < INTER_LETTER_SPACE; s++) {
+      for (int y = 0; y < 5; y++) scrollBuffer[y][col] = 0;
+      col++;
+    }
+  }
+
+  // Add trailing END_SPACE blank columns
+  for (int s = 0; s < END_SPACE; s++) {
+    for (int y = 0; y < 5; y++) scrollBuffer[y][col] = 0;
+    col++;
+  }
+}
+
+// Scroll position
+int scrollOffset = 0;
+unsigned long lastScrollTime = 0;
+const unsigned long SCROLL_INTERVAL = 120; // ms per shift
+
+// Draw the start screen into your ledOn buffer
+void drawStartScreen(byte ledOn[8][8]) {
+  unsigned long now = millis();
+  if (now - lastScrollTime >= SCROLL_INTERVAL) {
+    lastScrollTime = now;
+    scrollOffset++;
+    if (scrollOffset >= SCROLL_WIDTH) scrollOffset = 0;
+  }
+
+  // Clear
+  for (int r=0;r<8;r++) for (int c=0;c<8;c++) ledOn[r][c] = 0;
+
+  // Map scrollBuffer rows 0..4 onto matrix rows 1..5
+  for (int y = 0; y < 5; y++) {
+    int ledRow = y + 1;
+
+    for (int x = 0; x < 8; x++) {
+      int srcCol = (scrollOffset + x) % SCROLL_WIDTH;
+      ledOn[ledRow][x] = scrollBuffer[y][srcCol];
+    }
+  }
+}
+
 void setup() {
   Serial.begin(9600);
   Serial.setTimeout(100);
@@ -56,8 +186,9 @@ void setup() {
   Serial.println("Joystick Initialized");
   Serial.println("Move joystick to start game!");
   
-  randomSeed(analogRead(A6)); // Seed random number generator with unconnected pin
+  randomSeed(analogRead(A6)); // Seed random number generator with unconnected pin - true atmospheric noise a la CS109!
   generateApple(); // Generate first apple before game starts
+  buildScrollBuffer();
 
   for (byte i = 0; i < 8; i++) {
     pinMode(ANODE_PINS[i], OUTPUT);
@@ -250,15 +381,25 @@ void loop() {
   
   // Read joystick input
   byte newDirection = readDirection();
-  
-  // Start game if not active and joystick moved
-  if (gameState == WAITING && newDirection != 0) {
-    gameState = PLAYING;
-    direction = newDirection;
-    lastDirection = newDirection;
-    lastMoveTime = millis();
-    lastAppleBlinkTime = millis(); // Start apple blinking
-    Serial.println("Game started!");
+
+  // WAITING STATE → show scrolling start screen
+  if (gameState == WAITING) {
+    
+    // If joystick moved → start game
+    if (newDirection != 0) {
+      gameState = PLAYING;
+      direction = newDirection;
+      lastDirection = newDirection;
+      lastMoveTime = millis();
+      lastAppleBlinkTime = millis();
+      Serial.println("Game started!");
+      return;
+    }
+
+    // Otherwise draw the scrolling start screen
+    drawStartScreen(ledOn);
+    display(ledOn);
+    return;
   }
   
   // Handle apple blinking (only when game is playing)
